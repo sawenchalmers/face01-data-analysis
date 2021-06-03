@@ -1,3 +1,18 @@
+## installs
+import Pkg
+Pkg.add("DataFrames")
+Pkg.add("CSV")
+Pkg.add("Statistics")
+Pkg.add("MultivariateStats")
+Pkg.add("Random")
+Pkg.add("Plots")
+Pkg.add("PlotlyJS")
+Pkg.add("MLJBase")
+Pkg.add("MLJModels")
+Pkg.add("ChemometricsTools")
+Pkg.add("PartialLeastSquaresRegressor")
+Pkg.add("GLM")
+
 ## load dataset
 using DataFrames
 using CSV
@@ -6,9 +21,9 @@ raw_data = read("./data/lcia371.csv", String);
 io = IOBuffer(raw_data);
 df = CSV.File(io,
     header=1:2,
-    delim=';',
+    delim=',',
     ignoreemptylines=true,
-    decimal=',',
+    decimal='.',
 ) |> DataFrame;
 
 ## select data
@@ -17,14 +32,16 @@ removedatasetname(a) = rename!(n -> n[1:4] == "name" ? "name" : join(deleteat!(s
 modifyunit(a) = rename!(n -> n[1:4] == "name" ? "name" : join([split(n, "_")[1], " [", split(n, "_")[2], "]"]), a)
 modifyname(a) = a |> removedatasetname |> modifyunit
 
-recipe_df = copy(df);
+recipe_df = copy(df)
 
 recipe_df |> selectdataset |> modifyname |> dropmissing!
+
 ## PCA
 using MultivariateStats
 
 # remove name column and perform pca
-pca = fit(PCA, Matrix(select(recipe_df, Not([:name,]))))
+recipe_data = Matrix(select(recipe_df, Not([:name,])))
+pca = fit(PCA, recipe_data)
 
 ## reduce dataset
 filterbrick(a) = filter(a -> occursin("brick", a.name), a)
@@ -115,7 +132,7 @@ for i in 1:3
 end
 
 ## PLS fitting
-using MLJBase, MLJModels
+using MLJBase, MLJModels, GLM, Plots.PlotMeasures
 @load PLSRegressor pkg=PartialLeastSquaresRegressor
 
 recipe_endpoint_df = select(df, r"name", r"ReCiPe Endpoint \(I,A\):total:total")
@@ -128,8 +145,10 @@ data = endpoint_df[:, 2:end]
 rename!(data, 1 => :total)
 
 y, X = unpack(data, ==(:total), colname -> true)
+varnames = [replace(x, r"[^a-z|^\s].*" => "") for x in names(X)]
+rename!(X, varnames)
 
-regressor = PartialLeastSquaresRegressor.PLSRegressor(n_factors = 2)
+regressor = PartialLeastSquaresRegressor.PLSRegressor(n_factors = 3)
 pls_model = @pipeline Standardizer regressor target=Standardizer
 
 train, test = partition(eachindex(y), 0.7, shuffle=true)
@@ -137,6 +156,16 @@ train, test = partition(eachindex(y), 0.7, shuffle=true)
 pls_machine = machine(pls_model, X, y)
 
 fit!(pls_machine, rows = train)
+
+fp = fitted_params(pls_machine)
+weights = fp.pls_regressor.fitresult.W
+
+gr()
+p = plot(xlabel="Variable", ylabel="Relative weight", legend=:outertopleft, width=900px, height=700px)
+hline!([0], label=false, color=:black)
+plot!(1:18, weights[:,1], xticks=(1:18, varnames), xrotation=30, marker=:circle, label="Weights LV 1", xlims=(0,20))
+plot!(1:18, weights[:,2], marker=:circle, label="Weights LV 2")
+savefig(p, "img/pls_weights.png")
 
 cv_ŷ = MLJBase.predict(pls_machine, rows = test)
 cal_ŷ = MLJBase.predict(pls_machine, rows = train)
